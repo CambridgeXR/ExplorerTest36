@@ -59,7 +59,7 @@
     </div>
 
     <div id="video-screen">
-        <a-scene id="vr-scene" vr-mode-ui="enabled: true" renderer="antialias: true; colorManagement: true;">
+        <a-scene id="vr-scene" vr-mode-ui="enabled: false" renderer="antialias: true; colorManagement: true;">
             <a-assets><video id="video-src" loop playsinline muted crossorigin="anonymous" webkit-playsinline></video></a-assets>
             
             <a-videosphere id="video-sphere" src="#video-src"></a-videosphere>
@@ -81,46 +81,51 @@
     <script src="video-data.js"></script>
 
     <script>
-        // 1. Force Polyfill
-        const polyfill = new WebXRPolyfill();
+        // Force Polyfill active immediately
+        window.webxrPolyfill = new WebXRPolyfill();
 
-        // 2. IPD/Zoom Manager Component
+        // COMPONENT: IPD & Zoom Manager
         AFRAME.registerComponent('ipd-manager', {
             tick: function () {
-                // IPD FIX: Scale the Rig
+                // Only run logic in VR
+                if (!this.el.sceneEl.is('vr-mode')) return;
+
+                const rig = this.el.object3D;
+
+                // 1. ZOOM (Three.js Camera Zoom)
+                const overrideZoom = document.getElementById('override-zoom');
+                if (overrideZoom && overrideZoom.checked) {
+                    const zoomSlider = document.getElementById('zoom-slider');
+                    if (zoomSlider) {
+                        const zoomVal = parseFloat(zoomSlider.value);
+                        this.el.object3D.traverse((obj) => {
+                            if (obj.isCamera) {
+                                if (obj.zoom !== zoomVal) {
+                                    obj.zoom = zoomVal;
+                                    obj.updateProjectionMatrix();
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // 2. IPD (Rig Scaling)
                 const overrideIpd = document.getElementById('override-ipd');
                 if (overrideIpd && overrideIpd.checked) {
                     const ipdSlider = document.getElementById('ipd-slider');
-                    // Scale Logic: 64 / current = scale factor
-                    // If IPD is high (70), scale is < 1 (World smaller, eyes wider)
-                    const scale = 64 / parseFloat(ipdSlider.value);
-                    this.el.object3D.scale.set(scale, scale, scale);
+                    if (ipdSlider) {
+                        const defaultIPD = 64;
+                        const currentIPD = parseFloat(ipdSlider.value);
+                        const scaleFactor = defaultIPD / currentIPD;
+                        rig.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                    }
                 } else {
-                    this.el.object3D.scale.set(1, 1, 1);
-                }
-
-                // ZOOM FIX: Three.js Zoom Property
-                const overrideZoom = document.getElementById('override-zoom');
-                const cam = this.el.querySelector('a-camera');
-                if (cam && overrideZoom && overrideZoom.checked) {
-                    const zoomSlider = document.getElementById('zoom-slider');
-                    const threeCam = cam.getObject3D('camera');
-                    if (threeCam) {
-                        threeCam.zoom = parseFloat(zoomSlider.value);
-                        threeCam.updateProjectionMatrix();
-                    }
-                } else if (cam) {
-                    const threeCam = cam.getObject3D('camera');
-                    if(threeCam && threeCam.zoom !== 1) {
-                        threeCam.zoom = 1;
-                        threeCam.updateProjectionMatrix();
-                    }
+                    rig.scale.set(1, 1, 1);
                 }
             }
         });
 
         document.addEventListener('DOMContentLoaded', () => {
-            // Elements
             const homeScreen = document.getElementById('home-screen');
             const videoScreen = document.getElementById('video-screen');
             const goButton = document.getElementById('go-button');
@@ -129,14 +134,11 @@
             const loader = document.getElementById('loader');
             const playButton = document.getElementById('play-button');
             const forceVrButton = document.getElementById('force-vr-button');
-            const vrScene = document.getElementById('vr-scene');
-            const videoAsset = document.getElementById('video-src');
-            const videoSphere = document.getElementById('video-sphere');
             
-            // Settings
             const dropdownAudiences = document.getElementById('dropdown-audiences');
             const dropdownScenarios = document.getElementById('dropdown-scenarios');
             const safeMode = document.getElementById('safe-mode');
+            
             const overrideIpd = document.getElementById('override-ipd');
             const ipdWrapper = document.getElementById('ipd-wrapper');
             const ipdSlider = document.getElementById('ipd-slider');
@@ -145,21 +147,24 @@
             const zoomWrapper = document.getElementById('zoom-wrapper');
             const zoomSlider = document.getElementById('zoom-slider');
             const zoomLabel = document.getElementById('zoom-val');
+            
+            const vrScene = document.getElementById('vr-scene');
+            const videoAsset = document.getElementById('video-src');
+            const videoSphere = document.getElementById('video-sphere');
 
-            // Is iOS?
+            // Device Detection
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+            const isMobile = AFRAME.utils.device.isMobile();
 
-            // Setup
+            // Dropdowns
             Object.keys(audienceVideos).forEach(key => dropdownAudiences.add(new Option(key, key)));
             Object.keys(scenarioVideos).forEach(key => dropdownScenarios.add(new Option(key, key)));
-            
-            // Listeners
             dropdownAudiences.addEventListener('change', () => { if (dropdownAudiences.value) dropdownScenarios.value = ''; });
             dropdownScenarios.addEventListener('change', () => { if (dropdownScenarios.value) dropdownAudiences.value = ''; });
-            
+
+            // UI Logic
             ipdSlider.addEventListener('input', () => ipdLabel.textContent = ipdSlider.value);
             zoomSlider.addEventListener('input', () => zoomLabel.textContent = zoomSlider.value);
-
             overrideIpd.addEventListener('change', () => {
                 ipdSlider.disabled = !overrideIpd.checked;
                 ipdWrapper.classList.toggle('disabled', !overrideIpd.checked);
@@ -174,19 +179,18 @@
                 playButton.style.display = 'block';
             };
             const videoError = (e) => {
-                console.error("Video Error:", e);
+                console.error(e);
                 videoAsset.removeEventListener('error', videoError);
                 backButton.click();
                 alert("Error loading video.");
             };
 
-            // GO Click
+            // Go Button
             goButton.addEventListener('click', () => {
-                // iOS Permission Request
-                if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                if (isIOS && typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
                     DeviceMotionEvent.requestPermission().then(r => { 
-                        if (r === 'granted') loadVideo(); 
-                        else alert('Motion permission required for VR.'); 
+                        if(r==='granted') loadVideo(); 
+                        else alert('Motion permission required.');
                     }).catch(e => loadVideo());
                 } else {
                     loadVideo();
@@ -197,7 +201,6 @@
                 const key = dropdownAudiences.value || dropdownScenarios.value;
                 if (!key) { alert('Select a simulation.'); return; }
                 const data = audienceVideos[key] || scenarioVideos[key];
-
                 if (safeMode.checked) { window.location.href = data.youtube; return; }
 
                 homeScreen.style.display = 'none';
@@ -206,30 +209,38 @@
                 loader.style.display = 'block';
                 playButton.style.display = 'none';
 
-                // BUTTON LOGIC: Only show Custom Button on iOS
+                // --- DEVICE SPECIFIC BUTTON LOGIC ---
                 if (isIOS) {
+                    // iOS: Use our Custom Button (Polyfill)
+                    vrScene.setAttribute('vr-mode-ui', 'enabled', false);
                     forceVrButton.style.display = 'block';
-                    // Hide native button if it exists
-                    const nativeBtn = document.querySelector('.a-enter-vr-button');
-                    if(nativeBtn) nativeBtn.style.display = 'none';
+                } else if (isMobile) {
+                    // Android: Use Native Button (WebXR)
+                    vrScene.setAttribute('vr-mode-ui', 'enabled', true);
+                    forceVrButton.style.display = 'none';
                 } else {
+                    // Desktop: No button
+                    vrScene.setAttribute('vr-mode-ui', 'enabled', false);
                     forceVrButton.style.display = 'none';
                 }
 
                 videoSphere.addEventListener('materialvideoloadeddata', videoLoaded, { once: true });
                 videoAsset.addEventListener('error', videoError, { once: true });
+
                 videoAsset.muted = true;
                 videoAsset.setAttribute('src', data.cloudflare);
-
+                
                 if (vrScene.hasLoaded) vrScene.play();
                 else vrScene.addEventListener('loaded', () => vrScene.play());
             }
 
+            // Play Button
             playButton.addEventListener('click', () => {
                 videoAsset.play();
                 playButton.style.display = 'none';
             });
 
+            // iOS Custom VR Button
             forceVrButton.addEventListener('click', () => {
                 videoAsset.play();
                 vrScene.enterVR();
@@ -261,7 +272,7 @@
                     unmuteButton.innerHTML = '🔇';
                 }
             });
-
+            
             if ('serviceWorker' in navigator) {
                 window.addEventListener('load', () => {
                     navigator.serviceWorker.register('/ExplorerTest36/sw.js');
